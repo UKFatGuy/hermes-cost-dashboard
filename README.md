@@ -34,6 +34,14 @@ hermes-cost-dashboard
 
 The dashboard reads directly from Hermes' `state.db` (read-only, never writes). It queries the `sessions` and `session_model_usage` tables where Hermes already stores `estimated_cost_usd` and `actual_cost_usd` from each API call.
 
+**Auxiliary & fallback models are included** — the model breakdown shows every provider Hermes routes through:
+- Primary models (DeepSeek Flash/Pro)
+- Auto/fallback billing (internal Hermes retries and fallbacks)
+- Gemini vision tasks
+- Copilot fallback (when configured)
+
+Everything with zero cost still shows up so you can see *all* activity, not just paid calls.
+
 No proxy, no API keys, no cloud dependency — purely local.
 
 ## Requirements
