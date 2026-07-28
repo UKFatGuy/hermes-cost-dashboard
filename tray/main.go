@@ -8,10 +8,10 @@ import (
 	"image/color"
 	"image/png"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
@@ -262,30 +262,14 @@ func updateDisplay() {
 }
 
 func openBrowser(url string) {
-	var cmd string
-	var args []string
-
-	switch {
-	case isWindows():
-		// Use ShellExecute via rundll32 — works without a console window
-		cmd = "rundll32"
-		args = []string{"url.dll,FileProtocolHandler", url}
-	case isMac():
-		cmd = "open"
-		args = []string{url}
-	default: // Linux
-		cmd = "xdg-open"
-		args = []string{url}
-	}
-
-	// Use exec.Command instead of os.StartProcess for better Windows compatibility
-	proc, err := os.StartProcess(cmd,
-		append([]string{cmd}, args...),
-		&os.ProcAttr{Files: []*os.File{nil, nil, nil}})
-	if err != nil {
-		log.Printf("Failed to open browser: %v", err)
+	// exec.Command handles PATH resolution correctly on Windows
+	if isWindows() {
+		// ShellExecute via rundll32 — most reliable on Windows without console
+		exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	} else if isMac() {
+		exec.Command("open", url).Start()
 	} else {
-		proc.Release()
+		exec.Command("xdg-open", url).Start()
 	}
 }
 
