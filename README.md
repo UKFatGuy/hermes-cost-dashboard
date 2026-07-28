@@ -44,6 +44,23 @@ Everything with zero cost still shows up so you can see *all* activity, not just
 
 No proxy, no API keys, no cloud dependency — purely local.
 
+## Windows System Tray App
+
+A companion app that lives in your Windows system tray:
+
+- **Icon** shows in the notification area
+- **Hover tooltip** displays live total cost
+- **Right-click menu** shows: Open Dashboard, cost breakdown, Refresh, Quit
+- **Auto-refreshes** every 5 minutes
+
+**To use:**
+1. Download `hermes-cost-tray.exe` from [Releases](https://github.com/UKFatGuy/hermes-cost-dashboard/releases)
+2. Run it (no install needed — single .exe, no dependencies)
+3. The icon appears in your system tray
+4. Right-click → "Open Dashboard" to see the full web view
+
+Or run `run_tray.bat` from the repo root. The app connects to `https://cost.omoikane.icu` by default. Set `COST_API_URL` env var to change the endpoint.
+
 ## Requirements
 
 - Python 3.11+
