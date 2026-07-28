@@ -62,39 +62,65 @@ type ModelEntry struct {
 // ─── Icon generation ───────────────────────────────────────────────────────
 
 func generateIcon() []byte {
-	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
-	// Dark background with a green bar chart
-	bg := color.RGBA{13, 17, 23, 255}     // #0d1117
-	green := color.RGBA{63, 185, 80, 255}  // #3fb950
-	blue := color.RGBA{88, 166, 255, 255}  // #58a6ff
-	purple := color.RGBA{188, 140, 255, 255} // #bc8cff
+	// Build a simple bar-chart PNG first
+	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	bg := color.RGBA{13, 17, 23, 255}
+	green := color.RGBA{63, 185, 80, 255}
+	blue := color.RGBA{88, 166, 255, 255}
+	purple := color.RGBA{188, 140, 255, 255}
 
-	// Fill background
-	for y := 0; y < 16; y++ {
-		for x := 0; x < 16; x++ {
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
 			img.Set(x, y, bg)
 		}
 	}
-
 	// Bar chart: 3 bars
-	for y := 0; y < 3; y++ {
-		for x := 0; x < 16; x++ {
+	for x := 0; x < 32; x++ {
+		for y := 0; y < 32; y++ {
 			switch {
-			case x >= 2 && x < 5 && y >= 9:
-				img.Set(x, y+3, green)
-			case x >= 6 && x < 9 && y >= 5:
-				img.Set(x, y+3, blue)
-			case x >= 10 && x < 13 && y >= 7:
-				img.Set(x, y+3, purple)
+			case x >= 4 && x < 11 && y >= 18:
+				img.Set(x, y, green)
+			case x >= 13 && x < 20 && y >= 8:
+				img.Set(x, y, blue)
+			case x >= 22 && x < 29 && y >= 13:
+				img.Set(x, y, purple)
 			}
 		}
 	}
 
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
 		return nil
 	}
-	return buf.Bytes()
+	pngData := pngBuf.Bytes()
+
+	// Wrap in ICO format (Windows requires ICO, not raw PNG)
+	// ICO header: reserved(2) + type(2=1) + count(2) = 6 bytes
+	// Directory entry: w(1) + h(1) + colors(1) + reserved(1) + planes(2) + bpp(2) + size(4) + offset(4) = 16 bytes
+	header := make([]byte, 6+16+len(pngData))
+	// Type: 1 = ICO
+	header[2] = 1
+	header[3] = 0
+	// Count: 1 image
+	header[4] = 1
+	// Directory entry
+	header[6] = 32          // width
+	header[7] = 32          // height
+	header[8] = 0           // colors
+	header[10] = 1          // planes
+	header[12] = 32         // bpp
+	// Size of PNG data (little-endian uint32)
+	pngSize := len(pngData)
+	header[14] = byte(pngSize)
+	header[15] = byte(pngSize >> 8)
+	header[16] = byte(pngSize >> 16)
+	header[17] = byte(pngSize >> 24)
+	// Offset: 22 (6 header + 16 dir entry)
+	header[18] = 22
+	// Image data
+	copy(header[22:], pngData)
+
+	return header
 }
 
 // ─── API call ──────────────────────────────────────────────────────────────
