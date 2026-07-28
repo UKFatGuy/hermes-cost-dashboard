@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Cost Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border);
+  }
+  .header h1 {
+    font-size: 22px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .header h1 span { color: var(--accent); }
+  .header-controls { display: flex; gap: 12px; align-items: center; }
+  .header-controls select {
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  }
+  .status-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .last-updated { font-size: 12px; color: var(--muted); }
+
+  .cards {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px; margin-bottom: 24px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; position: relative; overflow: hidden;
+  }
+  .card-label { font-size: 12px; color: var(--muted); text-transform: uppercase;
+                letter-spacing: 0.5px; margin-bottom: 8px; }
+  .card-value { font-size: 28px; font-weight: 700; }
+  .card-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .card .trend { font-size: 13px; margin-top: 6px; }
+
+  .grid-2 {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;
+  }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px;
+  }
+  .panel h2 {
+    font-size: 14px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 16px;
+  }
+  .chart-container { position: relative; height: 250px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: var(--muted);
+       font-weight: 500; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+  .model-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: 11px; font-weight: 500;
+  }
+  .badge-deepseek { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .badge-gemini { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .badge-copilot { background: rgba(63,185,80,0.15); color: var(--green); }
+  .cost-positive { color: var(--orange); }
+  .cost-free { color: var(--green); }
+  .profile-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; background: rgba(139,148,158,0.15); color: var(--muted);
+  }
+  .profile-izzy { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .profile-billy { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .profile-default { background: rgba(88,166,255,0.15); color: var(--accent); }
+
+  .progress-bar {
+    height: 4px; border-radius: 2px; background: var(--border);
+    margin-top: 12px; overflow: hidden;
+  }
+  .progress-fill { height: 100%; border-radius: 2px;
+                   background: linear-gradient(90deg, var(--accent), var(--purple));
+                   transition: width 0.5s ease; }
+
+  .profile-breakdown { margin-top: 12px; }
+  .profile-row { display: flex; align-items: center; padding: 8px 0;
+                 border-bottom: 1px solid rgba(48,54,61,0.5); }
+  .profile-row:last-child { border-bottom: none; }
+  .profile-name { flex: 0 0 100px; font-weight: 500; font-size: 13px; }
+  .profile-bar { flex: 1; height: 20px; background: var(--border); border-radius: 4px;
+                 margin: 0 12px; overflow: hidden; position: relative; }
+  .profile-bar-fill { height: 100%; border-radius: 4px; transition: width 0.8s ease; }
+  .profile-cost { flex: 0 0 80px; text-align: right; font-size: 13px;
+                  font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>📊</span> Hermes Cost Dashboard</h1>
+  <div class="header-controls">
+    <span class="last-updated" id="lastUpdated">Loading...</span>
+    <select id="periodSelect" onchange="refreshData()">
+      <option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="365">Last year</option>
+      <option value="0">All time</option>
+    </select>
+  </div>
+</div>
+
+<div class="cards" id="summaryCards">
+  <div class="card"><div class="card-label">Total Spend</div>
+    <div class="card-value" id="totalCost">—</div>
+    <div class="card-sub" id="totalCostSub"></div></div>
+  <div class="card"><div class="card-label">Sessions</div>
+    <div class="card-value" id="sessionCount">—</div>
+    <div class="card-sub" id="sessionSub"></div></div>
+  <div class="card"><div class="card-label">Input Tokens</div>
+    <div class="card-value" id="inputTokens">—</div>
+    <div class="card-sub" id="inputTokensSub"></div></div>
+  <div class="card"><div class="card-label">Output Tokens</div>
+    <div class="card-value" id="outputTokens">—</div>
+    <div class="card-sub" id="outputTokensSub"></div></div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Cost by Model</h2>
+    <div class="chart-container"><canvas id="modelChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Cost Over Time</h2>
+    <div class="chart-container"><canvas id="dailyChart"></canvas></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Cost by Profile</h2>
+    <div id="profileBreakdown"><p style="color:var(--muted);font-size:13px;">Loading...</p></div>
+  </div>
+  <div class="panel">
+    <h2>Token Ratio</h2>
+    <div class="chart-container"><canvas id="tokenChart"></canvas></div>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:24px;">
+  <h2>Recent Sessions</h2>
+  <div style="overflow-x:auto;">
+    <table id="sessionsTable">
+      <thead>
+        <tr><th>Session</th><th>Profile</th><th>Model</th><th>Tokens</th><th>Cost</th><th>Status</th><th>Date</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let modelChartInstance = null;
+let dailyChartInstance = null;
+let tokenChartInstance = null;
+
+function formatDate(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+}
+
+function formatDateTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatCost(c) {
+  if (!c || c === 0) return '<span class="cost-free">£0.00</span>';
+  const gbp = c * 0.79; // rough USD→GBP
+  if (gbp < 0.01) return `<span class="cost-free">£0.00</span>`;
+  return `<span class="cost-positive">£${gbp.toFixed(2)}</span>`;
+}
+
+function formatTokens(n) {
+  if (!n) return '0';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toString();
+}
+
+function modelBadge(model) {
+  if (!model) return '<span class="model-badge">—</span>';
+  const m = model.toLowerCase();
+  if (m.includes('deepseek')) return `<span class="model-badge badge-deepseek">${model}</span>`;
+  if (m.includes('gemini')) return `<span class="model-badge badge-gemini">${model}</span>`;
+  if (m.includes('copilot') || m.includes('gpt')) return `<span class="model-badge badge-copilot">${model}</span>`;
+  return `<span class="model-badge">${model}</span>`;
+}
+
+function profileTag(p) {
+  if (!p || p === 'null') p = 'default';
+  const cls = `profile-tag profile-${p}`;
+  return `<span class="${cls}">${p}</span>`;
+}
+
+async function refreshData() {
+  const days = document.getElementById('periodSelect').value;
+  document.getElementById('lastUpdated').innerHTML = '<span class="status-dot"></span>Updating...';
+
+  try {
+    const [summary, sessions, profiles] = await Promise.all([
+      fetch(`/api/summary?days=${days}`).then(r => r.json()),
+      fetch(`/api/sessions`).then(r => r.json()),
+      fetch(`/api/profiles?days=${days}`).then(r => r.json()),
+    ]);
+
+    // Summary cards
+    const totalGbp = (summary.total_cost || 0) * 0.79;
+    document.getElementById('totalCost').textContent = `£${totalGbp.toFixed(2)}`;
+    document.getElementById('totalCostSub').textContent = `${formatTokens(summary.total_input_tokens + summary.total_output_tokens)} total tokens`;
+
+    document.getElementById('sessionCount').textContent = summary.session_count || 0;
+    const avgTokens = summary.session_count > 0
+      ? Math.round((summary.total_input_tokens + summary.total_output_tokens) / summary.session_count)
+      : 0;
+    document.getElementById('sessionSub').textContent = `${formatTokens(avgTokens)} avg tokens/session`;
+
+    document.getElementById('inputTokens').textContent = formatTokens(summary.total_input_tokens);
+    const inputGbp = (summary.total_input_tokens / 1_000_000) * 0.15 * 0.79;
+    document.getElementById('inputTokensSub').textContent = `~£${inputGbp.toFixed(3)} at Flash rates`;
+
+    document.getElementById('outputTokens').textContent = formatTokens(summary.total_output_tokens);
+    const outputGbp = (summary.total_output_tokens / 1_000_000) * 0.60 * 0.79;
+    document.getElementById('outputTokensSub').textContent = `~£${outputGbp.toFixed(3)} at Flash rates`;
+
+    // Model chart
+    if (modelChartInstance) modelChartInstance.destroy();
+    const modelCtx = document.getElementById('modelChart').getContext('2d');
+    const models = summary.by_model || [];
+    const modelColors = ['#58a6ff', '#bc8cff', '#3fb950', '#d29922', '#f85149', '#79c0ff'];
+    modelChartInstance = new Chart(modelCtx, {
+      type: 'doughnut',
+      data: {
+        labels: models.map(m => m.model || 'unknown'),
+        datasets: [{
+          data: models.map(m => (m.cost || 0) * 0.79),
+          backgroundColor: modelColors.slice(0, models.length),
+          borderWidth: 0,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#8b949e', padding: 12, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` £${(ctx.raw || 0).toFixed(2)} (${formatTokens(models[ctx.dataIndex].input_tokens || 0)} in / ${formatTokens(models[ctx.dataIndex].output_tokens || 0)} out)`
+            }
+          }
+        }
+      }
+    });
+
+    // Daily chart
+    if (dailyChartInstance) dailyChartInstance.destroy();
+    const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+    const daily = summary.daily || [];
+    dailyChartInstance = new Chart(dailyCtx, {
+      type: 'bar',
+      data: {
+        labels: daily.map(d => {
+          const parts = d.day.split('-');
+          return `${parts[2]}/${parts[1]}`;
+        }),
+        datasets: [{
+          label: 'Cost (£)',
+          data: daily.map(d => (d.cost || 0) * 0.79),
+          backgroundColor: '#58a6ff',
+          borderRadius: 3,
+          borderWidth: 0,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` £${(ctx.raw || 0).toFixed(3)} · ${formatTokens(daily[ctx.dataIndex].input_tokens || 0)} in / ${formatTokens(daily[ctx.dataIndex].output_tokens || 0)} out`
+            }
+          }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#8b949e', font: { size: 10 } } },
+          y: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 10 }, callback: v => `£${v.toFixed(2)}` } }
+        }
+      }
+    });
+
+    // Token ratio chart
+    if (tokenChartInstance) tokenChartInstance.destroy();
+    const tokenCtx = document.getElementById('tokenChart').getContext('2d');
+    tokenChartInstance = new Chart(tokenCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Input Tokens', 'Output Tokens', 'Reasoning Tokens'],
+        datasets: [{
+          data: [
+            summary.total_input_tokens || 0,
+            summary.total_output_tokens || 0,
+            summary.reasoning_tokens || 0
+          ],
+          backgroundColor: ['#58a6ff', '#3fb950', '#d29922'],
+          borderWidth: 0,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#8b949e', padding: 12, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` ${ctx.label}: ${formatTokens(ctx.raw)}`
+            }
+          }
+        }
+      }
+    });
+
+    // Profile breakdown
+    const profileData = profiles.profiles || [];
+    const profileMap = {};
+    profileData.forEach(p => {
+      const name = p.profile_name || 'default';
+      if (!profileMap[name]) profileMap[name] = { cost: 0, models: [], sessions: new Set() };
+      profileMap[name].cost += (p.cost || 0) * 0.79;
+      profileMap[name].models.push(`${p.model} (${p.billing_provider})`);
+    });
+    const profileNames = Object.keys(profileMap);
+    const maxProfileCost = Math.max(...profileNames.map(n => profileMap[n].cost), 0.001);
+
+    let profileHTML = '<div class="profile-breakdown">';
+    const profileColors = { default: '#58a6ff', izzy: '#bc8cff', billy: '#d29922', ukfatguy: '#3fb950' };
+    profileNames.forEach(name => {
+      const p = profileMap[name];
+      const pct = (p.cost / maxProfileCost) * 100;
+      const color = profileColors[name] || '#58a6ff';
+      profileHTML += `
+        <div class="profile-row">
+          <div class="profile-name">${profileTag(name)}</div>
+          <div class="profile-bar">
+            <div class="profile-bar-fill" style="width:${pct}%;background:${color};"></div>
+          </div>
+          <div class="profile-cost">£${p.cost.toFixed(2)}</div>
+        </div>`;
+    });
+    profileHTML += '</div>';
+    document.getElementById('profileBreakdown').innerHTML = profileHTML;
+
+    // Sessions table
+    const sessionList = sessions.sessions || [];
+    let tbody = '';
+    sessionList.forEach(s => {
+      const cost = (s.estimated_cost_usd || 0) * 0.79;
+      tbody += `<tr>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${s.title || ''}">${s.title || '—'}</td>
+        <td>${profileTag(s.profile_name)}</td>
+        <td>${modelBadge(s.model)}</td>
+        <td>${formatTokens((s.input_tokens||0)+(s.output_tokens||0))}</td>
+        <td>${cost > 0.001 ? `£${cost.toFixed(2)}` : '<span class="cost-free">Free</span>'}</td>
+        <td><span style="font-size:12px;color:var(--muted)">${s.cost_status || '—'}</span></td>
+        <td style="white-space:nowrap;">${formatDateTime(s.started_at)}</td>
+      </tr>`;
+    });
+    document.querySelector('#sessionsTable tbody').innerHTML = tbody;
+
+    document.getElementById('lastUpdated').innerHTML =
+      `<span class="status-dot"></span>Updated ${new Date().toLocaleTimeString('en-GB')}`;
+
+  } catch (err) {
+    document.getElementById('lastUpdated').textContent = `⚠ Error: ${err.message}`;
+  }
+}
+
+// Auto-refresh every 30 seconds
+refreshData();
+setInterval(refreshData, 30000);
+</script>
+
+</body>
+</html>
