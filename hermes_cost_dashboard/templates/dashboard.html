@@ -260,15 +260,21 @@ async function refreshData() {
     const outputGbp = (summary.total_output_tokens / 1_000_000) * 0.60 * 0.79;
     document.getElementById('outputTokensSub').textContent = `~£${outputGbp.toFixed(3)} at Flash rates`;
 
-    // Model chart
+    // Model chart (now from session_model_usage — includes auxiliary/fallback models)
     if (modelChartInstance) modelChartInstance.destroy();
     const modelCtx = document.getElementById('modelChart').getContext('2d');
     const models = summary.by_model || [];
-    const modelColors = ['#58a6ff', '#bc8cff', '#3fb950', '#d29922', '#f85149', '#79c0ff'];
+    const modelColors = ['#58a6ff', '#bc8cff', '#3fb950', '#d29922', '#f85149', '#79c0ff', '#ff7b72', '#7ee787'];
+    // Group same models with different billing providers
+    const modelLabels = models.map(m =>
+      m.billing_provider && m.billing_provider !== m.model
+        ? `${m.model} (${m.billing_provider})`
+        : m.model
+    );
     modelChartInstance = new Chart(modelCtx, {
       type: 'doughnut',
       data: {
-        labels: models.map(m => m.model || 'unknown'),
+        labels: modelLabels,
         datasets: [{
           data: models.map(m => (m.cost || 0) * 0.79),
           backgroundColor: modelColors.slice(0, models.length),
@@ -281,7 +287,12 @@ async function refreshData() {
           legend: { position: 'bottom', labels: { color: '#8b949e', padding: 12, font: { size: 11 } } },
           tooltip: {
             callbacks: {
-              label: ctx => ` £${(ctx.raw || 0).toFixed(2)} (${formatTokens(models[ctx.dataIndex].input_tokens || 0)} in / ${formatTokens(models[ctx.dataIndex].output_tokens || 0)} out)`
+              label: ctx => {
+                const m = models[ctx.dataIndex];
+                const label = modelLabels[ctx.dataIndex];
+                const cost = (ctx.raw || 0).toFixed(2);
+                return ` ${label}: £${cost} · ${formatTokens(m.input_tokens||0)} in / ${formatTokens(m.output_tokens||0)} out · ${m.api_calls||0} calls`;
+              }
             }
           }
         }

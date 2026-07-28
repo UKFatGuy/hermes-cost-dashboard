@@ -73,18 +73,20 @@ def get_summary(days: Optional[int] = 30) -> dict:
         ).fetchone()
         stats = dict(row)
 
-        # Cost by model
+        # Cost by model (using session_model_usage for full detail including auxiliary models)
         model_rows = conn.execute(
             """
             SELECT
-                model,
-                SUM(estimated_cost_usd) as cost,
-                SUM(input_tokens) as input_tokens,
-                SUM(output_tokens) as output_tokens,
-                COUNT(*) as session_count
-            FROM sessions
-            WHERE started_at >= ? AND model IS NOT NULL AND model != ''
-            GROUP BY model
+                m.model,
+                m.billing_provider,
+                SUM(m.estimated_cost_usd) as cost,
+                SUM(m.input_tokens) as input_tokens,
+                SUM(m.output_tokens) as output_tokens,
+                SUM(m.api_call_count) as api_calls
+            FROM session_model_usage m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.last_seen >= ?
+            GROUP BY m.model, m.billing_provider
             ORDER BY cost DESC
         """,
             (since,),
