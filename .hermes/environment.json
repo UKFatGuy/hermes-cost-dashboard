@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "FastAPI app",
+    "kind": "fastapi",
+    "bootstrap": [
+      "pip install -e ."
+    ],
+    "build": [],
+    "test": [],
+    "start": "uvicorn main:app --host 0.0.0.0 --port 8000",
+    "port": 8000,
+    "readinessPath": "/",
+    "evidence": [
+      "Detected Python project",
+      "Detected FastAPI/Uvicorn dependency"
+    ]
+  },
+  "updatedAt": "2026-08-12T12:14:29.407139+00:00"
+}
