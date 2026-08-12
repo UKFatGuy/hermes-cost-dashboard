@@ -39,6 +39,12 @@ def api_sessions(limit: int = Query(20, ge=1, le=100)):
     return {"sessions": db.get_recent_sessions(limit)}
 
 
+@app.get("/api/databases")
+def api_databases():
+    """List the state.db files being aggregated (verification helper)."""
+    return {"databases": [{"profile": label, "path": str(path)} for label, path in db.get_all_db_paths()]}
+
+
 @app.get("/api/profiles")
 def api_profiles(days: int = Query(30, ge=1, le=365)):
     return {"profiles": db.get_profile_cost_summary(days)}

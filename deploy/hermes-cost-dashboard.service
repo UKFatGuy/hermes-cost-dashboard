@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes Cost Dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/omoikane/.hermes/hermes-agent/venv/bin/python3 -m hermes_cost_dashboard.main
+WorkingDirectory=/home/omoikane/projects/hermes-cost-dashboard
+Restart=always
+RestartSec=10
+Environment=COST_DASHBOARD_PORT=8080
+Environment=COST_DASHBOARD_HOST=127.0.0.1
+
+[Install]
+WantedBy=default.target
