@@ -11,7 +11,7 @@ still target the current profile's DB for backward compatibility.
 
 import sqlite3
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -277,6 +277,22 @@ def get_summary(days: Optional[int] = 30) -> dict:
     merged["by_profile"] = sorted(merged["by_profile"].values(), key=lambda x: -x["cost"])
     merged["daily"] = sorted(merged["daily"].values(), key=lambda x: x["day"])
     merged["free_tier_providers"] = sorted(FREE_TIER_PROVIDERS)
+
+    # Inc 2: daily burn + projected monthly (post-zeroing, from merged daily series)
+    today_utc = datetime.now(timezone.utc).date()
+    merged["today_cost"] = 0.0
+    merged["avg_daily_burn"] = 0.0
+    merged["projected_monthly"] = 0.0
+    if merged["daily"]:
+        last_day = merged["daily"][-1]
+        if last_day["day"] == today_utc.isoformat():
+            merged["today_cost"] = last_day["cost"]
+        first = date.fromisoformat(merged["daily"][0]["day"])
+        elapsed = max(1, (today_utc - first).days + 1)
+        if days:
+            elapsed = min(elapsed, days)
+        merged["avg_daily_burn"] = merged["total_cost"] / elapsed
+        merged["projected_monthly"] = merged["avg_daily_burn"] * 30
     return merged
 
 

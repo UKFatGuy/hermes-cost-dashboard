@@ -139,6 +139,12 @@
   <div class="card"><div class="card-label">Total Spend</div>
     <div class="card-value" id="totalCost">—</div>
     <div class="card-sub" id="totalCostSub"></div></div>
+  <div class="card"><div class="card-label">Today</div>
+    <div class="card-value" id="todayCost">—</div>
+    <div class="card-sub" id="todayCostSub"></div></div>
+  <div class="card"><div class="card-label">Projected Month</div>
+    <div class="card-value" id="projectedCost">—</div>
+    <div class="card-sub" id="projectedCostSub"></div></div>
   <div class="card"><div class="card-label">Sessions</div>
     <div class="card-value" id="sessionCount">—</div>
     <div class="card-sub" id="sessionSub"></div></div>
@@ -235,10 +241,9 @@ async function refreshData() {
   document.getElementById('lastUpdated').innerHTML = '<span class="status-dot"></span>Updating...';
 
   try {
-    const [summary, sessions, profiles] = await Promise.all([
+    const [summary, sessions] = await Promise.all([
       fetch(`/api/summary?days=${days}`).then(r => r.json()),
       fetch(`/api/sessions`).then(r => r.json()),
-      fetch(`/api/profiles?days=${days}`).then(r => r.json()),
     ]);
 
     // Summary cards
@@ -249,6 +254,15 @@ async function refreshData() {
       totalSub += ` · <span class="cost-free">£${(summary.free_tier_cost * 0.79).toFixed(2)} free tier excluded</span>`;
     }
     document.getElementById('totalCostSub').innerHTML = totalSub;
+
+    const todayGbp = (summary.today_cost || 0) * 0.79;
+    document.getElementById('todayCost').textContent = `£${todayGbp.toFixed(2)}`;
+    const avgGbp = (summary.avg_daily_burn || 0) * 0.79;
+    document.getElementById('todayCostSub').textContent = `£${avgGbp.toFixed(2)} avg/day`;
+    const projGbp = (summary.projected_monthly || 0) * 0.79;
+    document.getElementById('projectedCost').textContent = `£${projGbp.toFixed(2)}`;
+    document.getElementById('projectedCostSub').textContent =
+      days === '0' ? 'at all-time run rate' : `at ${days}-day run rate`;
 
     document.getElementById('sessionCount').textContent = summary.session_count || 0;
     const avgTokens = summary.session_count > 0
@@ -370,23 +384,18 @@ async function refreshData() {
       }
     });
 
-    // Profile breakdown
-    const profileData = profiles.profiles || [];
-    const profileMap = {};
-    profileData.forEach(p => {
-      const name = p.profile_name || 'default';
-      if (!profileMap[name]) profileMap[name] = { cost: 0, models: [], sessions: new Set() };
-      profileMap[name].cost += (p.cost || 0) * 0.79;
-      profileMap[name].models.push(`${p.model} (${p.billing_provider})`);
-    });
-    const profileNames = Object.keys(profileMap);
-    const maxProfileCost = Math.max(...profileNames.map(n => profileMap[n].cost), 0.001);
+    // Profile breakdown (fleet-wide by_profile from /api/summary — the
+    // /api/profiles endpoint only reads the default profile's DB and would
+    // under-report every other profile)
+    const profileData = summary.by_profile || [];
+    const maxProfileCost = Math.max(...profileData.map(p => p.cost || 0), 0.001);
 
     let profileHTML = '<div class="profile-breakdown">';
     const profileColors = { default: '#58a6ff', izzy: '#bc8cff', billy: '#d29922', ukfatguy: '#3fb950' };
-    profileNames.forEach(name => {
-      const p = profileMap[name];
-      const pct = (p.cost / maxProfileCost) * 100;
+    profileData.forEach(p => {
+      const name = p.profile || 'default';
+      const cost = (p.cost || 0) * 0.79;
+      const pct = (cost / maxProfileCost) * 100;
       const color = profileColors[name] || '#58a6ff';
       profileHTML += `
         <div class="profile-row">
@@ -394,7 +403,7 @@ async function refreshData() {
           <div class="profile-bar">
             <div class="profile-bar-fill" style="width:${pct}%;background:${color};"></div>
           </div>
-          <div class="profile-cost">£${p.cost.toFixed(2)}</div>
+          <div class="profile-cost">£${cost.toFixed(2)}</div>
         </div>`;
     });
     profileHTML += '</div>';

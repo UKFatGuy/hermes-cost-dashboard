@@ -50,6 +50,10 @@ type Summary struct {
 	TotalInputTokens  int64         `json:"total_input_tokens"`
 	TotalOutputTokens int64         `json:"total_output_tokens"`
 	TotalCost         float64       `json:"total_cost"`
+	FreeTierCost      float64       `json:"free_tier_cost"`
+	TodayCost         float64       `json:"today_cost"`
+	AvgDailyBurn      float64       `json:"avg_daily_burn"`
+	ProjectedMonthly  float64       `json:"projected_monthly"`
 	CacheReadTokens   int64         `json:"cache_read_tokens"`
 	ReasoningTokens   int64         `json:"reasoning_tokens"`
 	ByModel           []ModelEntry  `json:"by_model"`
@@ -199,6 +203,7 @@ var (
 	mQuit    *systray.MenuItem
 	mTotal   *systray.MenuItem
 	mToday   *systray.MenuItem
+	mProjected *systray.MenuItem
 	// Fixed set of known profiles; dynamic additions handled at runtime.
 	mProfileItems = map[string]*systray.MenuItem{}
 )
@@ -215,6 +220,8 @@ func onReady() {
 	mTotal.Disable()
 	mToday = systray.AddMenuItem("Loading...", "")
 	mToday.Disable()
+	mProjected = systray.AddMenuItem("Loading...", "")
+	mProjected.Disable()
 
 	for _, name := range []string{"default", "ukfatguy", "issy", "billy", "chronicler"} {
 		item := systray.AddMenuItem("  "+name+": —", "")
@@ -263,19 +270,24 @@ func updateDisplay() {
 		return
 	}
 
-	// Today's spend (daily entries are UTC days from the DB)
-	todayCost := 0.0
-	todayStr := time.Now().UTC().Format("2006-01-02")
-	for _, d := range summary.Daily {
-		if d.Day == todayStr {
-			todayCost = d.Cost
-			break
+	// Today's spend — prefer the backend-computed field, fall back to the
+	// daily series (older backend without today_cost).
+	todayCost := summary.TodayCost
+	if todayCost == 0 {
+		todayStr := time.Now().UTC().Format("2006-01-02")
+		for _, d := range summary.Daily {
+			if d.Day == todayStr {
+				todayCost = d.Cost
+				break
+			}
 		}
 	}
+	projected := summary.ProjectedMonthly
 
-	tooltip := fmt.Sprintf("Hermes Cost (30d): %s · Today: %s · %d sessions · %s tokens",
+	tooltip := fmt.Sprintf("Hermes Cost (30d): %s · Today: %s · Projected/mo: %s · %d sessions · %s tokens",
 		fmtCost(summary.TotalCost),
 		fmtCost(todayCost),
+		fmtCost(projected),
 		summary.SessionCount,
 		fmtTokens(summary.TotalInputTokens+summary.TotalOutputTokens),
 	)
@@ -283,6 +295,7 @@ func updateDisplay() {
 
 	mTotal.SetTitle(fmt.Sprintf("💰 Total (30d): %s · %d sessions", fmtCost(summary.TotalCost), summary.SessionCount))
 	mToday.SetTitle(fmt.Sprintf("📅 Today: %s", fmtCost(todayCost)))
+	mProjected.SetTitle(fmt.Sprintf("📈 Projected (30d): %s", fmtCost(projected)))
 
 	// Per-profile lines
 	for _, p := range summary.ByProfile {
