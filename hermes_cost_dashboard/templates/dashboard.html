@@ -244,7 +244,11 @@ async function refreshData() {
     // Summary cards
     const totalGbp = (summary.total_cost || 0) * 0.79;
     document.getElementById('totalCost').textContent = `£${totalGbp.toFixed(2)}`;
-    document.getElementById('totalCostSub').textContent = `${formatTokens(summary.total_input_tokens + summary.total_output_tokens)} total tokens`;
+    let totalSub = `${formatTokens(summary.total_input_tokens + summary.total_output_tokens)} total tokens`;
+    if (summary.free_tier_cost > 0) {
+      totalSub += ` · <span class="cost-free">£${(summary.free_tier_cost * 0.79).toFixed(2)} free tier excluded</span>`;
+    }
+    document.getElementById('totalCostSub').innerHTML = totalSub;
 
     document.getElementById('sessionCount').textContent = summary.session_count || 0;
     const avgTokens = summary.session_count > 0
@@ -266,11 +270,12 @@ async function refreshData() {
     const models = summary.by_model || [];
     const modelColors = ['#58a6ff', '#bc8cff', '#3fb950', '#d29922', '#f85149', '#79c0ff', '#ff7b72', '#7ee787'];
     // Group same models with different billing providers
-    const modelLabels = models.map(m =>
-      m.billing_provider && m.billing_provider !== m.model
+    const modelLabels = models.map(m => {
+      const base = m.billing_provider && m.billing_provider !== m.model
         ? `${m.model} (${m.billing_provider})`
-        : m.model
-    );
+        : m.model;
+      return m.free_tier ? `${base} · free tier` : base;
+    });
     modelChartInstance = new Chart(modelCtx, {
       type: 'doughnut',
       data: {

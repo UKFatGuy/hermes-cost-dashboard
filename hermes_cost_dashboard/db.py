@@ -15,6 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+# Providers whose API keys are on a FREE TIER (Google AI Studio free-tier
+# projects — billy/issy/chronicler/ukfatguy/sarah run these). Hermes prices
+# them at official list price, so their "estimated" cost is phantom spend:
+# free tier bills $0 until rate limits are hit (then it errors, it doesn't
+# bill). We zero those costs at aggregation time and expose the excluded
+# amount, so the dashboard shows expected real billing rather than list
+# price. If a profile ever upgrades to paid Gemini, remove "gemini" here.
+FREE_TIER_PROVIDERS = frozenset({"gemini"})
+
+
 
 def get_db_path() -> str:
     """Locate the Hermes state.db, checking profiles too."""
@@ -118,6 +128,57 @@ GROUP BY DATE(started_at, 'unixepoch')
 """
 
 
+def _free_tier_in_clause() -> tuple[str, list]:
+    """SQL IN-clause + params for FREE_TIER_PROVIDERS (empty set → never match)."""
+    if not FREE_TIER_PROVIDERS:
+        return "0", []
+    placeholders = ",".join("?" for _ in FREE_TIER_PROVIDERS)
+    return f"({placeholders})", sorted(FREE_TIER_PROVIDERS)
+
+
+def _free_tier_cost(conn: sqlite3.Connection, since: float) -> float:
+    """Total free-tier (phantom) cost in this DB since `since`."""
+    in_clause, params = _free_tier_in_clause()
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(m.estimated_cost_usd), 0) as free_cost
+            FROM session_model_usage m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.last_seen >= ? AND m.billing_provider IN {in_clause}""",
+        (since, *params),
+    ).fetchone()
+    return float(row["free_cost"] or 0)
+
+
+def _free_tier_by_profile(conn: sqlite3.Connection, since: float, label: str) -> dict:
+    """Free-tier cost per profile_name, keyed exactly like _PROFILE_SUM_SQL."""
+    in_clause, params = _free_tier_in_clause()
+    rows = conn.execute(
+        f"""SELECT COALESCE(s.profile_name, ?) as profile,
+                   COALESCE(SUM(m.estimated_cost_usd), 0) as free_cost
+            FROM session_model_usage m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.last_seen >= ? AND m.billing_provider IN {in_clause}
+            GROUP BY COALESCE(s.profile_name, ?)""",
+        (label, since, *params, label),
+    ).fetchall()
+    return {r["profile"]: float(r["free_cost"] or 0) for r in rows}
+
+
+def _free_tier_by_day(conn: sqlite3.Connection, since: float) -> dict:
+    """Free-tier cost per day, keyed exactly like _DAILY_SUM_SQL."""
+    in_clause, params = _free_tier_in_clause()
+    rows = conn.execute(
+        f"""SELECT DATE(s.started_at, 'unixepoch') as day,
+                   COALESCE(SUM(m.estimated_cost_usd), 0) as free_cost
+            FROM session_model_usage m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.last_seen >= ? AND m.billing_provider IN {in_clause}
+            GROUP BY DATE(s.started_at, 'unixepoch')""",
+        (since, *params),
+    ).fetchall()
+    return {r["day"]: float(r["free_cost"] or 0) for r in rows}
+
+
 def get_summary(days: Optional[int] = 30) -> dict:
     """Aggregate cost, token, and session stats across ALL profile DBs."""
     since = (
@@ -131,6 +192,7 @@ def get_summary(days: Optional[int] = 30) -> dict:
         "total_input_tokens": 0,
         "total_output_tokens": 0,
         "total_cost": 0.0,
+        "free_tier_cost": 0.0,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
         "reasoning_tokens": 0,
@@ -147,11 +209,16 @@ def get_summary(days: Optional[int] = 30) -> dict:
         except Exception:
             continue
         try:
+            free_cost = _free_tier_cost(conn, since)
+            free_by_profile = _free_tier_by_profile(conn, since, label)
+            free_by_day = _free_tier_by_day(conn, since)
+
             row = conn.execute(_SESSION_SUM_SQL, (since,)).fetchone()
             merged["session_count"] += row["session_count"]
             merged["total_input_tokens"] += row["total_input_tokens"]
             merged["total_output_tokens"] += row["total_output_tokens"]
-            merged["total_cost"] += row["total_cost"]
+            merged["total_cost"] += max(0.0, (row["total_cost"] or 0) - free_cost)
+            merged["free_tier_cost"] += free_cost
             merged["cache_read_tokens"] += row["cache_read_tokens"]
             merged["cache_write_tokens"] += row["cache_write_tokens"]
             merged["reasoning_tokens"] += row["reasoning_tokens"]
@@ -166,7 +233,12 @@ def get_summary(days: Optional[int] = 30) -> dict:
                     "output_tokens": 0,
                     "api_calls": 0,
                 })
-                e["cost"] += r["cost"] or 0
+                if r["billing_provider"] in FREE_TIER_PROVIDERS:
+                    e["free_tier"] = True
+                    # list-price estimate is phantom spend — keep tokens, drop cost
+                    e["cost"] += 0.0
+                else:
+                    e["cost"] += r["cost"] or 0
                 e["input_tokens"] += r["input_tokens"] or 0
                 e["output_tokens"] += r["output_tokens"] or 0
                 e["api_calls"] += r["api_calls"] or 0
@@ -180,7 +252,7 @@ def get_summary(days: Optional[int] = 30) -> dict:
                     "output_tokens": 0,
                     "session_count": 0,
                 })
-                e["cost"] += r["cost"] or 0
+                e["cost"] += max(0.0, (r["cost"] or 0) - free_by_profile.get(key, 0.0))
                 e["input_tokens"] += r["input_tokens"] or 0
                 e["output_tokens"] += r["output_tokens"] or 0
                 e["session_count"] += r["session_count"]
@@ -194,7 +266,7 @@ def get_summary(days: Optional[int] = 30) -> dict:
                     "output_tokens": 0,
                     "session_count": 0,
                 })
-                e["cost"] += r["cost"] or 0
+                e["cost"] += max(0.0, (r["cost"] or 0) - free_by_day.get(day, 0.0))
                 e["input_tokens"] += r["input_tokens"] or 0
                 e["output_tokens"] += r["output_tokens"] or 0
                 e["session_count"] += r["session_count"]
@@ -204,6 +276,7 @@ def get_summary(days: Optional[int] = 30) -> dict:
     merged["by_model"] = sorted(merged["by_model"].values(), key=lambda x: -x["cost"])
     merged["by_profile"] = sorted(merged["by_profile"].values(), key=lambda x: -x["cost"])
     merged["daily"] = sorted(merged["daily"].values(), key=lambda x: x["day"])
+    merged["free_tier_providers"] = sorted(FREE_TIER_PROVIDERS)
     return merged
 
 
@@ -224,7 +297,14 @@ def get_recent_sessions(limit: int = 20) -> list[dict]:
             """,
             (limit,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in rows]
+        for row in rows:
+            # Free-tier providers: list-price estimate is phantom spend.
+            # Keep the row visible but show it as free.
+            if row.get("billing_provider") in FREE_TIER_PROVIDERS:
+                row["estimated_cost_usd"] = 0.0
+                row["cost_status"] = "free_tier"
+        return rows
     finally:
         conn.close()
 
@@ -256,6 +336,12 @@ def get_profile_cost_summary(days: Optional[int] = 30) -> list[dict]:
             """,
             (since,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in rows]
+        for row in rows:
+            # Free-tier providers: keep usage, drop the phantom list-price cost.
+            if row.get("billing_provider") in FREE_TIER_PROVIDERS:
+                row["cost"] = 0.0
+                row["free_tier"] = True
+        return rows
     finally:
         conn.close()
