@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -54,12 +55,25 @@ type Summary struct {
 	TodayCost         float64       `json:"today_cost"`
 	AvgDailyBurn      float64       `json:"avg_daily_burn"`
 	ProjectedMonthly  float64       `json:"projected_monthly"`
+	Alerts            Alerts        `json:"alerts"`
 	CacheReadTokens   int64         `json:"cache_read_tokens"`
 	ReasoningTokens   int64         `json:"reasoning_tokens"`
 	ByModel           []ModelEntry  `json:"by_model"`
 	ByProfile         []ProfileEntry `json:"by_profile"`
 	Daily             []DailyEntry  `json:"daily"`
 	Databases         []string      `json:"databases"`
+}
+
+type Alerts struct {
+	Level   string      `json:"level"`
+	Daily   AlertStatus `json:"daily"`
+	Monthly AlertStatus `json:"monthly"`
+}
+
+type AlertStatus struct {
+	ThresholdUSD float64 `json:"threshold_usd"`
+	CurrentUSD   float64 `json:"current_usd"`
+	Breached     bool    `json:"breached"`
 }
 
 type ModelEntry struct {
@@ -87,13 +101,21 @@ type DailyEntry struct {
 
 // ─── Icon generation ───────────────────────────────────────────────────────
 
-func generateIcon() []byte {
+func generateIcon(level string) []byte {
 	// Build a simple bar-chart PNG first
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	bg := color.RGBA{13, 17, 23, 255}
 	green := color.RGBA{63, 185, 80, 255}
 	blue := color.RGBA{88, 166, 255, 255}
 	purple := color.RGBA{188, 140, 255, 255}
+	// Inc 4: alert colouring — tint the bars red (critical) / orange (warn)
+	if level == "critical" {
+		red := color.RGBA{248, 81, 73, 255}
+		green, blue, purple = red, red, red
+	} else if level == "warn" {
+		orange := color.RGBA{210, 153, 34, 255}
+		green, blue, purple = orange, orange, orange
+	}
 
 	for y := 0; y < 32; y++ {
 		for x := 0; x < 32; x++ {
@@ -204,12 +226,13 @@ var (
 	mTotal   *systray.MenuItem
 	mToday   *systray.MenuItem
 	mProjected *systray.MenuItem
+	mAlert   *systray.MenuItem
 	// Fixed set of known profiles; dynamic additions handled at runtime.
 	mProfileItems = map[string]*systray.MenuItem{}
 )
 
 func onReady() {
-	systray.SetIcon(generateIcon())
+	systray.SetIcon(generateIcon("ok"))
 	systray.SetTooltip("Hermes Cost Dashboard — loading...")
 
 	mOpen = systray.AddMenuItem("Open Dashboard", "Open the web dashboard in your browser")
@@ -222,6 +245,8 @@ func onReady() {
 	mToday.Disable()
 	mProjected = systray.AddMenuItem("Loading...", "")
 	mProjected.Disable()
+	mAlert = systray.AddMenuItem("", "")
+	mAlert.Disable()
 
 	for _, name := range []string{"default", "ukfatguy", "issy", "billy", "chronicler"} {
 		item := systray.AddMenuItem("  "+name+": —", "")
@@ -296,6 +321,28 @@ func updateDisplay() {
 	mTotal.SetTitle(fmt.Sprintf("💰 Total (30d): %s · %d sessions", fmtCost(summary.TotalCost), summary.SessionCount))
 	mToday.SetTitle(fmt.Sprintf("📅 Today: %s", fmtCost(todayCost)))
 	mProjected.SetTitle(fmt.Sprintf("📈 Projected (30d): %s", fmtCost(projected)))
+
+	// Inc 4: alert state — tint the icon + surface threshold breaches
+	level := summary.Alerts.Level
+	if level == "" {
+		level = "ok"
+	}
+	systray.SetIcon(generateIcon(level))
+	if level != "ok" {
+		parts := []string{}
+		if summary.Alerts.Daily.Breached {
+			parts = append(parts, fmt.Sprintf("today %s over %s cap", fmtCost(summary.Alerts.Daily.CurrentUSD), fmtCost(summary.Alerts.Daily.ThresholdUSD)))
+		}
+		if summary.Alerts.Monthly.Breached {
+			parts = append(parts, fmt.Sprintf("month %s over %s cap", fmtCost(summary.Alerts.Monthly.CurrentUSD), fmtCost(summary.Alerts.Monthly.ThresholdUSD)))
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "approaching threshold")
+		}
+		mAlert.SetTitle("⚠ ALERT: " + strings.Join(parts, " · "))
+	} else {
+		mAlert.SetTitle("")
+	}
 
 	// Per-profile lines
 	for _, p := range summary.ByProfile {

@@ -96,6 +96,9 @@ SELECT
     SUM(m.estimated_cost_usd) as cost,
     SUM(m.input_tokens) as input_tokens,
     SUM(m.output_tokens) as output_tokens,
+    SUM(m.cache_read_tokens) as cache_read_tokens,
+    SUM(m.cache_write_tokens) as cache_write_tokens,
+    SUM(m.reasoning_tokens) as reasoning_tokens,
     SUM(m.api_call_count) as api_calls
 FROM session_model_usage m
 JOIN sessions s ON s.id = m.session_id
@@ -231,6 +234,9 @@ def get_summary(days: Optional[int] = 30) -> dict:
                     "cost": 0.0,
                     "input_tokens": 0,
                     "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 0,
                     "api_calls": 0,
                 })
                 if r["billing_provider"] in FREE_TIER_PROVIDERS:
@@ -241,6 +247,9 @@ def get_summary(days: Optional[int] = 30) -> dict:
                     e["cost"] += r["cost"] or 0
                 e["input_tokens"] += r["input_tokens"] or 0
                 e["output_tokens"] += r["output_tokens"] or 0
+                e["cache_read_tokens"] += r["cache_read_tokens"] or 0
+                e["cache_write_tokens"] += r["cache_write_tokens"] or 0
+                e["reasoning_tokens"] += r["reasoning_tokens"] or 0
                 e["api_calls"] += r["api_calls"] or 0
 
             for r in conn.execute(_PROFILE_SUM_SQL, (label, since)):
@@ -293,6 +302,43 @@ def get_summary(days: Optional[int] = 30) -> dict:
             elapsed = min(elapsed, days)
         merged["avg_daily_burn"] = merged["total_cost"] / elapsed
         merged["projected_monthly"] = merged["avg_daily_burn"] * 30
+
+    # Inc 3: effective rates per model (USD per 1M tokens, post-zeroing)
+    for e in merged["by_model"]:
+        e["usd_per_1m_input"] = (
+            round(e["cost"] / e["input_tokens"] * 1_000_000, 4) if e["input_tokens"] else None
+        )
+        e["usd_per_1m_output"] = (
+            round(e["cost"] / e["output_tokens"] * 1_000_000, 4) if e["output_tokens"] else None
+        )
+
+    # Inc 4: spend threshold alerts. Thresholds via env (defaults: £0.79-adj
+    # friendly $1.00/day, $15.00/month projected). Tray + dashboard react to level.
+    alert_daily = float(os.environ.get("COST_ALERT_DAILY_USD", "1.00"))
+    alert_monthly = float(os.environ.get("COST_ALERT_MONTHLY_USD", "15.00"))
+    daily_breached = merged["today_cost"] >= alert_daily
+    monthly_breached = merged["projected_monthly"] >= alert_monthly
+    if daily_breached or monthly_breached:
+        level = "critical"
+    elif (alert_daily and merged["today_cost"] >= 0.8 * alert_daily) or (
+        alert_monthly and merged["projected_monthly"] >= 0.8 * alert_monthly
+    ):
+        level = "warn"
+    else:
+        level = "ok"
+    merged["alerts"] = {
+        "level": level,
+        "daily": {
+            "threshold_usd": alert_daily,
+            "current_usd": merged["today_cost"],
+            "breached": daily_breached,
+        },
+        "monthly": {
+            "threshold_usd": alert_monthly,
+            "current_usd": merged["projected_monthly"],
+            "breached": monthly_breached,
+        },
+    }
     return merged
 
 

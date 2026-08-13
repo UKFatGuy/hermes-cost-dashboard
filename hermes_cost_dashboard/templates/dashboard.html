@@ -91,6 +91,14 @@
   .badge-copilot { background: rgba(63,185,80,0.15); color: var(--green); }
   .cost-positive { color: var(--orange); }
   .cost-free { color: var(--green); }
+  .card-value.alert-critical { color: var(--red); }
+  .card-value.alert-warn { color: var(--orange); }
+  .alert-banner {
+    background: rgba(248,81,73,0.12); border: 1px solid var(--red); color: var(--red);
+    padding: 10px 16px; border-radius: 8px; margin-bottom: 16px;
+    font-size: 13px; font-weight: 500;
+  }
+  .alert-banner.warn { background: rgba(210,153,34,0.12); border-color: var(--orange); color: var(--orange); }
   .profile-tag {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 11px; background: rgba(139,148,158,0.15); color: var(--muted);
@@ -135,6 +143,8 @@
   </div>
 </div>
 
+<div id="alertBanner" class="alert-banner" style="display:none;"></div>
+
 <div class="cards" id="summaryCards">
   <div class="card"><div class="card-label">Total Spend</div>
     <div class="card-value" id="totalCost">—</div>
@@ -175,6 +185,18 @@
   <div class="panel">
     <h2>Token Ratio</h2>
     <div class="chart-container"><canvas id="tokenChart"></canvas></div>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:24px;">
+  <h2>Model Detail</h2>
+  <div style="overflow-x:auto;">
+    <table id="modelTable">
+      <thead>
+        <tr><th>Model</th><th>Provider</th><th>Calls</th><th>Input</th><th>Output</th><th>Cache read</th><th>Reasoning</th><th>£/1M in</th><th>£/1M out</th><th>Cost</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
   </div>
 </div>
 
@@ -263,6 +285,29 @@ async function refreshData() {
     document.getElementById('projectedCost').textContent = `£${projGbp.toFixed(2)}`;
     document.getElementById('projectedCostSub').textContent =
       days === '0' ? 'at all-time run rate' : `at ${days}-day run rate`;
+
+    // Inc 4: alert banner + card colouring
+    const alerts = summary.alerts || { level: 'ok' };
+    const banner = document.getElementById('alertBanner');
+    const todayEl = document.getElementById('todayCost');
+    const projEl = document.getElementById('projectedCost');
+    todayEl.classList.remove('alert-critical', 'alert-warn');
+    projEl.classList.remove('alert-critical', 'alert-warn');
+    if (alerts.level !== 'ok') {
+      const parts = [];
+      if (alerts.daily && alerts.daily.breached)
+        parts.push(`Today £${(alerts.daily.current_usd * 0.79).toFixed(2)} over £${(alerts.daily.threshold_usd * 0.79).toFixed(2)} daily cap`);
+      if (alerts.monthly && alerts.monthly.breached)
+        parts.push(`Projected month £${(alerts.monthly.current_usd * 0.79).toFixed(2)} over £${(alerts.monthly.threshold_usd * 0.79).toFixed(2)} monthly cap`);
+      if (!parts.length) parts.push('Spend approaching threshold');
+      banner.textContent = `⚠ ${parts.join(' · ')}`;
+      banner.className = 'alert-banner' + (alerts.level === 'warn' ? ' warn' : '');
+      banner.style.display = 'block';
+      if (alerts.daily && alerts.daily.breached) todayEl.classList.add('alert-critical');
+      if (alerts.monthly && alerts.monthly.breached) projEl.classList.add('alert-critical');
+    } else {
+      banner.style.display = 'none';
+    }
 
     document.getElementById('sessionCount').textContent = summary.session_count || 0;
     const avgTokens = summary.session_count > 0
@@ -408,6 +453,25 @@ async function refreshData() {
     });
     profileHTML += '</div>';
     document.getElementById('profileBreakdown').innerHTML = profileHTML;
+
+    // Model detail table (Inc 3)
+    const rateFmt = v => (v === null || v === undefined) ? '—' : `£${(v * 0.79).toFixed(3)}`;
+    const modelRows = (summary.by_model || [])
+      .filter(m => (m.api_calls || 0) > 0)
+      .sort((a, b) => (b.cost || 0) - (a.cost || 0))
+      .map(m => `<tr>
+        <td>${modelBadge(m.model)}${m.free_tier ? ' <span class="cost-free">free tier</span>' : ''}</td>
+        <td>${m.billing_provider || '—'}</td>
+        <td>${m.api_calls || 0}</td>
+        <td>${formatTokens(m.input_tokens || 0)}</td>
+        <td>${formatTokens(m.output_tokens || 0)}</td>
+        <td>${formatTokens(m.cache_read_tokens || 0)}</td>
+        <td>${formatTokens(m.reasoning_tokens || 0)}</td>
+        <td>${rateFmt(m.usd_per_1m_input)}</td>
+        <td>${rateFmt(m.usd_per_1m_output)}</td>
+        <td>${(m.cost || 0) > 0.0001 ? `£${((m.cost || 0) * 0.79).toFixed(2)}` : '<span class="cost-free">£0.00</span>'}</td>
+      </tr>`).join('');
+    document.querySelector('#modelTable tbody').innerHTML = modelRows;
 
     // Sessions table
     const sessionList = sessions.sessions || [];
