@@ -23,6 +23,10 @@ import (
 
 var apiBaseURL = getEnvOrDefault("COST_API_URL", "https://cost.omoikane.icu")
 var refreshInterval = getDurationEnv("COST_REFRESH_INTERVAL", 5*time.Minute)
+// Optional HTTP Basic Auth (Caddy basic_auth on the dashboard URL).
+// Set COST_API_USER / COST_API_PASS as Windows user env vars.
+var apiUser = os.Getenv("COST_API_USER")
+var apiPass = os.Getenv("COST_API_PASS")
 
 // USD -> GBP. TODO(inc 3): make dynamic/configurable via API.
 const gbpRate = 0.79
@@ -180,7 +184,14 @@ func fetchSummary(days int) (*Summary, error) {
 	u.RawQuery = q.Encode()
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(u.String())
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("request build failed: %w", err)
+	}
+	if apiUser != "" || apiPass != "" {
+		req.SetBasicAuth(apiUser, apiPass)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
