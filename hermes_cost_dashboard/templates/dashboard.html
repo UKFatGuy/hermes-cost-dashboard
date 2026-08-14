@@ -200,6 +200,28 @@
   </div>
 </div>
 
+<div class="grid-2">
+  <div class="panel">
+    <h2>Requests per Day (RPD)</h2>
+    <div class="chart-container"><canvas id="rpdChart"></canvas></div>
+    <div style="font-size:12px;color:var(--muted);margin-top:8px;">
+      Hermes-side request counts from state.db (not Google's counter — that also includes AI Studio + direct API traffic) · reference free-tier limits: Lite 500 RPD, plain Flash 20 RPD · last 14 days shown
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Rate Limit Hits (429)</h2>
+    <div id="rateLimitSummary"></div>
+    <div style="overflow-x:auto;">
+      <table id="rateLimitTable">
+        <thead>
+          <tr><th>Time</th><th>Profile</th><th>Attempts</th><th>Detail</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div class="panel" style="margin-bottom:24px;">
   <h2>Recent Sessions</h2>
   <div style="overflow-x:auto;">
@@ -216,6 +238,7 @@
 let modelChartInstance = null;
 let dailyChartInstance = null;
 let tokenChartInstance = null;
+let rpdChartInstance = null;
 
 function formatDate(ts) {
   if (!ts) return '—';
@@ -263,9 +286,10 @@ async function refreshData() {
   document.getElementById('lastUpdated').innerHTML = '<span class="status-dot"></span>Updating...';
 
   try {
-    const [summary, sessions] = await Promise.all([
+    const [summary, sessions, usage] = await Promise.all([
       fetch(`/api/summary?days=${days}`).then(r => r.json()),
       fetch(`/api/sessions`).then(r => r.json()),
+      fetch(`/api/usage?days=${days}`).then(r => r.json()),
     ]);
 
     // Summary cards
@@ -489,6 +513,80 @@ async function refreshData() {
       </tr>`;
     });
     document.querySelector('#sessionsTable tbody').innerHTML = tbody;
+
+    // Inc 5: RPD chart — per-day per-model requests (server-capped at 14 days)
+    if (rpdChartInstance) rpdChartInstance.destroy();
+    const rpdCtx = document.getElementById('rpdChart').getContext('2d');
+    const rpdRows = usage.rpd || [];
+    const rpdDays = [...new Set(rpdRows.map(r => r.day))];
+    const rpdSeries = {};   // model label -> { values: [...], limit }
+    const rpdModels = [];
+    rpdRows.forEach(r => {
+      const label = `${r.model}${r.billing_provider && r.billing_provider !== r.model ? ` (${r.billing_provider})` : ''}`;
+      if (!(label in rpdSeries)) {
+        rpdSeries[label] = { values: new Array(rpdDays.length).fill(0), limit: r.rpd_limit || null };
+        rpdModels.push(label);
+      }
+      rpdSeries[label].values[rpdDays.indexOf(r.day)] = r.requests;
+    });
+    const rpdDatasets = rpdModels.map((label, i) => ({
+      label,
+      data: rpdSeries[label].values,
+      backgroundColor: modelColors[i % modelColors.length],
+      borderRadius: 2,
+      borderWidth: 0,
+    }));
+    rpdChartInstance = new Chart(rpdCtx, {
+      type: 'bar',
+      data: {
+        labels: rpdDays.map(d => `${d.slice(8)}/${d.slice(5, 7)}`),
+        datasets: rpdDatasets,
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#8b949e', padding: 12, font: { size: 10 } } },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const lim = rpdSeries[ctx.dataset.label] && rpdSeries[ctx.dataset.label].limit;
+                return ` ${ctx.dataset.label}: ${ctx.raw} req${lim ? ` / ${lim} RPD limit` : ''}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false }, ticks: { color: '#8b949e', font: { size: 10 } } },
+          y: { stacked: true, beginAtZero: true, grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 10 } } }
+        }
+      }
+    });
+
+    // Inc 5: rate-limit hits (429) — journald-watch summary + recent events
+    const rl = usage.rate_limits || {};
+    let rlHtml = '';
+    if (rl.error) {
+      rlHtml = `<div style="color:var(--red);font-size:13px;">⚠ ${rl.error}</div>`;
+    } else {
+      const n = rl.total_events || 0;
+      rlHtml = `<div style="font-size:13px;margin-bottom:10px;">
+        <span style="font-weight:700;${n ? 'color:var(--red)' : 'color:var(--green)'}">${n}</span>
+        ceiling hit${n === 1 ? '' : 's'} in last ${rl.days || '—'} days`;
+      if (rl.by_unit && rl.by_unit.length) {
+        rlHtml += ' · ' + rl.by_unit.map(u => `<span class="profile-tag">${u.profile}: ${u.count}</span>`).join(' ');
+      }
+      rlHtml += '</div>';
+    }
+    document.getElementById('rateLimitSummary').innerHTML = rlHtml;
+
+    const rlRows = (rl.recent || []).map(e => `<tr>
+      <td style="white-space:nowrap;">${formatDateTime(e.ts)}</td>
+      <td>${profileTag(e.profile)}</td>
+      <td>${e.attempts || '—'}</td>
+      <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(e.detail || '').replace(/"/g, '&quot;')}">${e.detail || '—'}</td>
+    </tr>`).join('');
+    document.querySelector('#rateLimitTable tbody').innerHTML =
+      rlRows || `<tr><td colspan="4" style="color:var(--green);">No ceiling hits — free tier holding.</td></tr>`;
 
     document.getElementById('lastUpdated').innerHTML =
       `<span class="status-dot"></span>Updated ${new Date().toLocaleTimeString('en-GB')}`;

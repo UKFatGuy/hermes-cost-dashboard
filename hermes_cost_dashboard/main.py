@@ -50,6 +50,12 @@ def api_profiles(days: int = Query(30, ge=1, le=365)):
     return {"profiles": db.get_profile_cost_summary(days)}
 
 
+@app.get("/api/usage")
+def api_usage(days: int = Query(14, ge=0, le=365)):
+    """Inc 5: RPD series + journald rate-limit events."""
+    return db.get_usage_telemetry(days)
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     template = env.get_template("dashboard.html")

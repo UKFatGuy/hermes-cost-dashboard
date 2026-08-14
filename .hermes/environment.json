@@ -4,11 +4,11 @@
     "name": "FastAPI app",
     "kind": "fastapi",
     "bootstrap": [
-      "pip install -e ."
+      "/home/omoikane/.hermes/hermes-agent/venv/bin/pip install -e ."
     ],
     "build": [],
     "test": [],
-    "start": "uvicorn main:app --host 0.0.0.0 --port 8000",
+    "start": "/home/omoikane/.hermes/hermes-agent/venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8000",
     "port": 8000,
     "readinessPath": "/",
     "evidence": [

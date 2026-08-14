@@ -11,6 +11,11 @@ still target the current profile's DB for backward compatibility.
 
 import sqlite3
 import os
+import json
+import re
+import subprocess
+import threading
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -23,6 +28,27 @@ from typing import Optional
 # amount, so the dashboard shows expected real billing rather than list
 # price. If a profile ever upgrades to paid Gemini, remove "gemini" here.
 FREE_TIER_PROVIDERS = frozenset({"gemini"})
+
+# Reference per-day request limits for the RPD panel (Inc 5). From the
+# 2026-08-14 rate-limit deep-dive: Google free-tier projects cap Lite models
+# at 500 RPD and plain Flash at 20 RPD (Hermes-side traffic). These are
+# REFERENCE values for eyeballing headroom — Google's own counter also counts
+# AI Studio + direct API traffic to the same project, so parity is never exact.
+# Models we don't have a verified limit for show as "—" (honest, not invented).
+def _rpd_limit(model: str) -> Optional[int]:
+    if not model:
+        return None
+    m = model.lower()
+    if "lite" in m:
+        return 500
+    if m in {
+        "gemini-2.0-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash",
+    }:
+        return 20
+    return None
+
 
 
 
@@ -407,3 +433,188 @@ def get_profile_cost_summary(days: Optional[int] = 30) -> list[dict]:
         return rows
     finally:
         conn.close()
+
+
+# ─── Inc 5: usage/rate-limit telemetry (RPD + journald 429 watch) ───────────
+
+_RPD_SQL = """
+SELECT
+    DATE(m.last_seen, 'unixepoch') as day,
+    m.model,
+    m.billing_provider,
+    SUM(m.api_call_count) as requests
+FROM session_model_usage m
+WHERE m.last_seen >= ?
+GROUP BY DATE(m.last_seen, 'unixepoch'), m.model, m.billing_provider
+"""
+
+
+def get_rpd(days: int = 14) -> list[dict]:
+    """Per-day, per-model request counts across ALL profile DBs.
+
+    Built from session_model_usage.api_call_count — accurate for Hermes
+    traffic, NOT Google's counter (which also counts AI Studio + direct API
+    calls to the same project). TRUE RPM/TPM peaks are not reconstructable
+    from state.db (session-level aggregates only) — say so in the UI.
+    """
+    since = datetime.now(timezone.utc).timestamp() - days * 86400 if days else 0
+    merged: dict[tuple, dict] = {}
+    for label, path in get_all_db_paths():
+        try:
+            conn = _connect(path)
+        except Exception:
+            continue
+        try:
+            for r in conn.execute(_RPD_SQL, (since,)):
+                key = (r["day"], r["model"], r["billing_provider"])
+                e = merged.setdefault(key, {
+                    "day": r["day"],
+                    "model": r["model"],
+                    "billing_provider": r["billing_provider"],
+                    "requests": 0,
+                })
+                e["requests"] += r["requests"] or 0
+        finally:
+            conn.close()
+    rows = sorted(merged.values(), key=lambda x: (x["day"], x["model"]))
+    for e in rows:
+        e["rpd_limit"] = _rpd_limit(e["model"])
+    return rows
+
+
+# systemd user units whose agent loops we attribute rate-limit events to.
+# The desktop backend (hermes-serve.service) is where profile-switched
+# desktop traffic logs; per-profile units are exact.
+_JOURNALD_UNITS = [
+    "hermes-serve.service",
+    "hermes-serve-ukfatguy.service",
+    "hermes-serve-issy.service",
+    "hermes-serve-billy.service",
+    "hermes-serve-sarah.service",
+    "hermes-gateway.service",
+]
+
+_RE_FAILED = re.compile(r"API call failed \(attempt (\d+)/(\d+)\)")
+_RE_BACKOFF = re.compile(r"Rate limited\. Waiting ([\d.]+)s \(attempt (\d+)/(\d+)\)")
+_RE_EXHAUSTED = re.compile(r"Rate limited after (\d+) retries")
+_RE_FINAL = re.compile(r"Final error:")
+
+
+def _unit_profile(unit: str) -> str:
+    m = re.match(r"hermes-serve-(.+)\.service", unit)
+    if m:
+        return m.group(1)
+    if unit == "hermes-serve.service":
+        return "desktop"
+    if unit == "hermes-gateway.service":
+        return "gateway"
+    return unit
+
+
+def get_rate_limit_events(days: int = 7) -> dict:
+    """Parse journald for Hermes 429/rate-limit log lines (read-only watch).
+
+    journalctl --user with --grep (systemd >= 247) returns only matching
+    lines, but the scan still walks the whole journal: 30 days ≈ 1.15M lines
+    ≈ 22s (measured 2026-08-14). So the scan window is bounded to 14 days and
+    results are cached per 5-minute bucket — at most one slow scan per bucket,
+    instant hits after that. The 'exhausted' lines ("Rate limited after N
+    retries") are the real ceiling hits — one per retry cycle, so counting
+    them is dedup-safe (the ⚠ failed-attempt / ⏱ backoff / 💀 final-error
+    lines around it are context, not separate events).
+    """
+    days = min(max(days, 1), 14)  # journald scan cost bounds the window
+    bucket = int(time.time() // 300)  # 5-minute cache bucket
+    key = (days, bucket)
+    with _rl_cache_lock:
+        if key in _rl_cache:
+            return _rl_cache[key]
+    result = _build_rate_limit_events(days)
+    with _rl_cache_lock:
+        _rl_cache[key] = result
+        for stale in [k for k in _rl_cache if k[1] < bucket - 1]:
+            del _rl_cache[stale]
+    return result
+
+
+_rl_cache: dict = {}
+_rl_cache_lock = threading.Lock()
+
+
+def _build_rate_limit_events(days: int) -> dict:
+    cmd = [
+        "journalctl", "--user",
+        f"--since={days} days ago",
+        "-o", "json",
+        "--grep=HTTP 429|Rate limited|Final error",
+    ]
+    for u in _JOURNALD_UNITS:
+        cmd += ["-u", u]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return {"error": "journalctl failed", "days": days,
+                "total_events": 0, "by_day": [], "by_unit": [], "recent": []}
+    # journalctl exits 0 even on a bad --since / bad --grep (prints to stderr
+    # and returns nothing) — treat any stderr output as a hard failure so the
+    # panel shows an error instead of silently reporting "no events".
+    if proc.returncode != 0 or proc.stderr.strip():
+        return {"error": f"journalctl: {proc.stderr.strip()[:200]}", "days": days,
+                "total_events": 0, "by_day": [], "by_unit": [], "recent": []}
+
+    exhausted = []  # (ts_us, unit, attempts, detail)
+    for ln in proc.stdout.splitlines():
+        if not ln.strip().startswith("{"):
+            continue
+        try:
+            j = json.loads(ln)
+        except Exception:
+            continue
+        unit = j.get("_SYSTEMD_USER_UNIT") or j.get("_SYSTEMD_UNIT") or "?"
+        ts_us = int(j.get("__REALTIME_TIMESTAMP") or 0)
+        msg = j.get("MESSAGE") or ""
+        m = _RE_EXHAUSTED.search(msg)
+        if m:
+            exhausted.append((ts_us, unit, int(m.group(1)), msg))
+
+    by_day: dict[str, int] = {}
+    by_unit: dict[str, int] = {}
+    for ts_us, unit, attempts, detail in exhausted:
+        day = datetime.fromtimestamp(ts_us / 1_000_000, timezone.utc).date().isoformat()
+        by_day[day] = by_day.get(day, 0) + 1
+        by_unit[unit] = by_unit.get(unit, 0) + 1
+
+    recent = []
+    for ts_us, unit, attempts, detail in sorted(exhausted, key=lambda x: -x[0])[:20]:
+        recent.append({
+            "ts": round(ts_us / 1_000_000, 1),
+            "unit": unit,
+            "profile": _unit_profile(unit),
+            "attempts": attempts,
+            "detail": detail[:220],
+        })
+
+    return {
+        "days": days,
+        "total_events": len(exhausted),
+        "by_day": [{"day": k, "count": v} for k, v in sorted(by_day.items())],
+        "by_unit": [
+            {"unit": k, "profile": _unit_profile(k), "count": v}
+            for k, v in sorted(by_unit.items(), key=lambda x: -x[1])
+        ],
+        "recent": recent,
+    }
+
+
+def get_usage_telemetry(days: int = 14) -> dict:
+    """Inc 5 bundle: RPD series + journald rate-limit events.
+
+    RPD is capped at the last 14 days (chart readability + bounded payload);
+    the period selector still drives the spend panels. Rate-limit events are
+    independently capped by the journald scan window in get_rate_limit_events.
+    """
+    return {
+        "days": days,
+        "rpd": get_rpd(min(days or 14, 14)),
+        "rate_limits": get_rate_limit_events(days),
+    }
